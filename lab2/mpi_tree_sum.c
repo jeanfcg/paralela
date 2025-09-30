@@ -31,7 +31,7 @@ if (rank >= active) {
         local += recv_val;
     }
 }
-
+ 
 // 2) Reducción en árbol binario para 'active' procesos (active es potencia de 2)
 for (int step = 1; step < active; step <<= 1) {
     if ((rank % (2*step)) == 0) {
