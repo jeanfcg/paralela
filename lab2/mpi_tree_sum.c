@@ -50,12 +50,6 @@ if (rank == 0) {
     printf("Suma global = %lld (p=%d)\n", local, p);
 }
 
-// (Opcional) Comprobación con MPI_Reduce para verificar corrección:
-/*
-long long check=0;
-MPI_Reduce(&((long long){(argc>=2)?atoll(argv[1]):(rank+1)}), &check, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-if (rank==0) printf("[Reduce]    = %lld\n", check);
-*/
 
 MPI_Finalize();
 return 0;
