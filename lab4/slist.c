@@ -1,97 +1,114 @@
+#define _POSIX_C_SOURCE 200809L
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
-typedef struct Node {
-    int key;
-    struct Node* next;
-} Node;
+/* ---------- Configuración fija ---------- */
+enum { OPS_TOTALES = 100000, INIT_KEYS = 1000, MEMBER_PCT = 80, INSERT_PCT = 10, DELETE_PCT = 10 };
 
-typedef struct Bucket {
-    Node* head;
-    pthread_mutex_t m;
-} Bucket;
+/* ---------- Estructuras ---------- */
+typedef struct Node { int key; struct Node* next; } Node;
 
-typedef struct {
-    Bucket* buckets;
-    int B;
-} StripedList;
+/* Lista única y spinlock global (busy waiting) */
+static Node* head = NULL;
+static atomic_flag spin = ATOMIC_FLAG_INIT;
 
-static int hash(int key, int B) { unsigned u = (unsigned)key; return (int)(u % (unsigned)B); }
-
-void sl_init(StripedList* L, int B) {
-    L->B = B;
-    L->buckets = (Bucket*)calloc((size_t)B, sizeof(Bucket));
-    for (int i=0;i<B;i++) pthread_mutex_init(&L->buckets[i].m, NULL);
-}
-
-void sl_destroy(StripedList* L) {
-    for (int i=0;i<L->B;i++) {
-        pthread_mutex_destroy(&L->buckets[i].m);
-        Node* p=L->buckets[i].head;
-        while(p){Node* q=p->next; free(p); p=q;}
+/* ---------- Utilidades ---------- */
+static inline void spin_lock(atomic_flag* f){
+    while (atomic_flag_test_and_set_explicit(f, memory_order_acquire)) {
+        /* busy-wait: quemamos CPU hasta que el lock se libere */
     }
-    free(L->buckets);
+}
+static inline void spin_unlock(atomic_flag* f){
+    atomic_flag_clear_explicit(f, memory_order_release);
 }
 
-int sl_member(StripedList* L, int key) {
-    int b = hash(key, L->B);
-    pthread_mutex_lock(&L->buckets[b].m);
-    Node* cur = L->buckets[b].head;
+static inline double now_sec(void){
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec*1e-9;
+}
+
+/* RNG simple por hilo (xorshift32) */
+typedef struct { unsigned x; } RNG;
+static inline unsigned xr(RNG* r){ unsigned x=r->x; x^=x<<13; x^=x>>17; x^=x<<5; r->x=x?x:1u; return r->x; }
+
+/* ---------- Operaciones (lista ordenada, protegidas por el spinlock global) ---------- */
+static int ll_member(int key){
+    spin_lock(&spin);
+    Node* cur = head;
     while (cur && cur->key < key) cur = cur->next;
     int found = (cur && cur->key == key);
-    pthread_mutex_unlock(&L->buckets[b].m);
+    spin_unlock(&spin);
     return found;
 }
-
-int sl_insert(StripedList* L, int key) {
-    int b = hash(key, L->B);
-    pthread_mutex_lock(&L->buckets[b].m);
-    Node **pp = &L->buckets[b].head, *cur = L->buckets[b].head;
-    while (cur && cur->key < key) { pp = &cur->next; cur = cur->next; }
-    if (cur && cur->key == key) { pthread_mutex_unlock(&L->buckets[b].m); return 0; }
-    Node* n = (Node*)malloc(sizeof(Node)); n->key=key; n->next=cur; *pp = n;
-    pthread_mutex_unlock(&L->buckets[b].m);
+static int ll_insert(int key){
+    spin_lock(&spin);
+    Node **pp = &head, *cur = head;
+    while (cur && cur->key < key) { pp=&cur->next; cur=cur->next; }
+    if (cur && cur->key == key) { spin_unlock(&spin); return 0; }
+    Node* n = (Node*)malloc(sizeof(Node)); n->key=key; n->next=cur; *pp=n;
+    spin_unlock(&spin);
     return 1;
 }
-
-int sl_delete(StripedList* L, int key) {
-    int b = hash(key, L->B);
-    pthread_mutex_lock(&L->buckets[b].m);
-    Node **pp = &L->buckets[b].head, *cur = L->buckets[b].head;
-    while (cur && cur->key < key) { pp = &cur->next; cur = cur->next; }
-    if (!cur || cur->key != key) { pthread_mutex_unlock(&L->buckets[b].m); return 0; }
+static int ll_delete(int key){
+    spin_lock(&spin);
+    Node **pp = &head, *cur = head;
+    while (cur && cur->key < key) { pp=&cur->next; cur=cur->next; }
+    if (!cur || cur->key != key) { spin_unlock(&spin); return 0; }
     *pp = cur->next; free(cur);
-    pthread_mutex_unlock(&L->buckets[b].m);
+    spin_unlock(&spin);
     return 1;
 }
 
-/*** Demo con hilos: cada hilo hace operaciones aleatorias en la lista ***/
-typedef struct { StripedList* L; int ops; unsigned seed; } ThArgs;
+/* ---------- Trabajo de cada hilo ---------- */
+typedef struct { int ops; RNG rng; } ThArgs;
 
-void* thread_ops(void* a_) {
+static void* worker(void* a_){
     ThArgs* a = (ThArgs*)a_;
-    for (int i=0;i<a->ops;i++) {
-        int k = (int)(rand_r(&a->seed) % 100000);
-        int op = (int)(rand_r(&a->seed) % 10);
-        if (op<6) sl_member(a->L, k);       // 60% búsqueda
-        else if (op<8) sl_insert(a->L, k);  // 20% inserción
-        else sl_delete(a->L, k);            // 20% borrado
+    for (int i=0;i<a->ops;i++){
+        int key  = (int)(xr(&a->rng) & 0x7fffffff);
+        int pick = (int)(xr(&a->rng) % 100);
+        if (pick < MEMBER_PCT)                 ll_member(key);
+        else if (pick < MEMBER_PCT+INSERT_PCT) ll_insert(key);
+        else                                    ll_delete(key);
     }
     return NULL;
 }
 
+/* ---------- Limpieza de la lista ---------- */
+static void ll_free_all(void){
+    Node* p=head; head=NULL;
+    while(p){ Node* q=p->next; free(p); p=q; }
+}
+
+/* ---------- main ---------- */
 int main(int argc, char** argv){
-    if (argc<5){fprintf(stderr,"uso: %s B hilos ops_por_hilo semillas...\n",argv[0]);return 1;}
-    int B=atoi(argv[1]), T=atoi(argv[2]), OPS=atoi(argv[3]);
-    StripedList L; sl_init(&L,B);
+    if (argc<2){ fprintf(stderr,"uso: %s THREADS\n", argv[0]); return 1; }
+    int T = atoi(argv[1]); if (T<=0){ fprintf(stderr,"THREADS inválido\n"); return 1; }
 
-    pthread_t* th=(pthread_t*)malloc((size_t)T*sizeof(pthread_t));
-    ThArgs* ta=(ThArgs*)malloc((size_t)T*sizeof(ThArgs));
-    for (int i=0;i<T;i++){ ta[i]=(ThArgs){.L=&L,.ops=OPS,.seed=(unsigned)atoi(argv[4+i])};
-        pthread_create(&th[i],NULL,thread_ops,&ta[i]); }
-    for (int i=0;i<T;i++) pthread_join(th[i],NULL);
+    /* carga inicial determinística */
+    RNG r = {12345u};
+    for (int i=0;i<INIT_KEYS;i++) ll_insert((int)(xr(&r)&0x7fffffff));
 
-    sl_destroy(&L); free(ta); free(th);
+    /* hilos */
+    pthread_t* th = (pthread_t*)malloc((size_t)T*sizeof *th);
+    ThArgs*    ta = (ThArgs*)   malloc((size_t)T*sizeof *ta);
+
+    int base = OPS_TOTALES / T, extra = OPS_TOTALES % T;
+    double t0 = now_sec();
+    for (int k=0;k<T;k++){
+        ta[k].ops = base + (k < extra);
+        ta[k].rng.x = 777u + (unsigned)k;
+        pthread_create(&th[k], NULL, worker, &ta[k]);
+    }
+    for (int k=0;k<T;k++) pthread_join(th[k], NULL);
+    double t1 = now_sec();
+
+    printf("threads=%d  time=%.3f s  ops=%d  mix=%d/%d/%d\n",
+           T, t1-t0, OPS_TOTALES, MEMBER_PCT, INSERT_PCT, DELETE_PCT);
+
+    free(ta); free(th); ll_free_all();
     return 0;
 }
