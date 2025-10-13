@@ -10,13 +10,13 @@ typedef struct {
     int m, n, T, tid;
 } Ctx;
 
-/* reloj simple (monotónico en segundos) */
+/* tiempo */
 static double now_sec(void){
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec*1e-9;
 }
 
-/* PRNG reproducible muy simple */
+/* PRNG */
 static inline double rnd(uint64_t* s){
     *s = *s*6364136223846793005ULL + 1ULL;
     return (double)((*s>>11) & 0xFFFFFFFFFFFFULL) / (double)(1ULL<<52);
@@ -31,7 +31,7 @@ static void matvec_serial(const double* A,const double* x,double* y,int m,int n)
     }
 }
 
-/* hilo: reparto cíclico (striped) i = tid, tid+T, ... */
+/* hilo: reparto cíclico */
 static void* worker(void* arg){
     Ctx* c = (Ctx*)arg;
     for(int i=c->tid;i<c->m;i+=c->T){
@@ -81,3 +81,4 @@ int main(int argc, char** argv){
     free(ctx); free(th); free(yref); free(y); free(x); free(A);
     return 0;
 }
+
