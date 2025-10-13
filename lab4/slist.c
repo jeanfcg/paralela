@@ -5,17 +5,16 @@
 #include <stdlib.h>
 #include <time.h>
 
-/* ---------- Configuración fija ---------- */
+/* Configuración fija */
 enum { OPS_TOTALES = 100000, INIT_KEYS = 1000, MEMBER_PCT = 80, INSERT_PCT = 10, DELETE_PCT = 10 };
 
-/* ---------- Estructuras ---------- */
 typedef struct Node { int key; struct Node* next; } Node;
 
 /* Lista única y spinlock global (busy waiting) */
 static Node* head = NULL;
 static atomic_flag spin = ATOMIC_FLAG_INIT;
 
-/* ---------- Utilidades ---------- */
+/* Utilidades */
 static inline void spin_lock(atomic_flag* f){
     while (atomic_flag_test_and_set_explicit(f, memory_order_acquire)) {
         /* busy-wait: quemamos CPU hasta que el lock se libere */
@@ -34,7 +33,7 @@ static inline double now_sec(void){
 typedef struct { unsigned x; } RNG;
 static inline unsigned xr(RNG* r){ unsigned x=r->x; x^=x<<13; x^=x>>17; x^=x<<5; r->x=x?x:1u; return r->x; }
 
-/* ---------- Operaciones (lista ordenada, protegidas por el spinlock global) ---------- */
+/*  Operaciones */
 static int ll_member(int key){
     spin_lock(&spin);
     Node* cur = head;
@@ -62,7 +61,7 @@ static int ll_delete(int key){
     return 1;
 }
 
-/* ---------- Trabajo de cada hilo ---------- */
+/*  Trabajo de cada hilo  */
 typedef struct { int ops; RNG rng; } ThArgs;
 
 static void* worker(void* a_){
@@ -77,13 +76,12 @@ static void* worker(void* a_){
     return NULL;
 }
 
-/* ---------- Limpieza de la lista ---------- */
+/* Limpieza de la lista */
 static void ll_free_all(void){
     Node* p=head; head=NULL;
     while(p){ Node* q=p->next; free(p); p=q; }
 }
 
-/* ---------- main ---------- */
 int main(int argc, char** argv){
     if (argc<2){ fprintf(stderr,"uso: %s THREADS\n", argv[0]); return 1; }
     int T = atoi(argv[1]); if (T<=0){ fprintf(stderr,"THREADS inválido\n"); return 1; }
@@ -112,3 +110,4 @@ int main(int argc, char** argv){
     free(ta); free(th); ll_free_all();
     return 0;
 }
+
