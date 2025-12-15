@@ -17,7 +17,7 @@ __global__ void matVecKernel(float *A, float *B, float *C, int N)
 
 int main()
 {
-    int N = 1024;
+    int N = 32;
     int sizeMat = N * N * sizeof(float);
     int sizeVec = N * sizeof(float);
 
@@ -70,3 +70,4 @@ int main()
     return 0;
 
 }
+
