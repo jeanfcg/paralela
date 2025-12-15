@@ -26,7 +26,7 @@ int main()
     float *h_B = (float *)malloc(sizeMat);
     float *h_C = (float *)malloc(sizeVec);
 
-    /* Inicialización simple */
+    /* Inicialización */
     for (int i = 0; i < N; i++) {
         h_C[i] = 1.0f;
         for (int j = 0; j < N; j++) {
@@ -68,4 +68,5 @@ int main()
     free(h_C);
 
     return 0;
+
 }
